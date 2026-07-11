@@ -106,22 +106,28 @@ if [ ! -f "$LLAMA_SERVER_BIN" ]; then
         fi
         
         if [ "$HTTP_CODE" = "200" ]; then
-            # 提取 llama-server 二进制
-            tar xzf "$TMP_TAR" -C "$SCRIPT_DIR/bin" --strip-components=1 "*/llama-server" 2>/dev/null
+            # 提取 llama-server 二进制（解压全部文件，然后保留需要的）
+            tar xzf "$TMP_TAR" -C "$SCRIPT_DIR/bin" --strip-components 1 2>/dev/null
             rm -f "$TMP_TAR"
             if [ -f "$LLAMA_SERVER_BIN" ]; then
                 chmod +x "$LLAMA_SERVER_BIN"
                 echo "   ✅ llama-server 下载成功 ($(du -h "$LLAMA_SERVER_BIN" | cut -f1))"
             else
-                echo "   ⚠️ 下载成功但解压失败，尝试从系统寻找..."
-                for loc in /usr/local/lib/ollama/llama-server /usr/bin/llama-server /usr/local/bin/llama-server; do
-                    if [ -f "$loc" ]; then
-                        cp "$loc" "$LLAMA_SERVER_BIN"
-                        chmod +x "$LLAMA_SERVER_BIN"
-                        echo "   → 使用 $loc"
-                        break
-                    fi
-                done
+                # 再试试用 find 找一下
+                FOUND=$(find "$SCRIPT_DIR/bin" -name "llama-server" -type f 2>/dev/null | head -1)
+                if [ -n "$FOUND" ]; then
+                    mv "$FOUND" "$LLAMA_SERVER_BIN"
+                    chmod +x "$LLAMA_SERVER_BIN"
+                    echo "   ✅ llama-server 解压成功"
+                else
+                    echo "   ⚠️ 下载包可能不完整，删除重试..."
+                    rm -rf "$SCRIPT_DIR/bin/"*
+                    echo "   ❌ 下载失败。可从 GitHub 手动下载:"
+                    echo "      $DOWNLOAD_URL"
+                    echo "     然后解压出 llama-server 放到 $SCRIPT_DIR/bin/"
+                    echo "   🔄 或改用 Ollama 后端（编辑 config.yaml 设置 backend: ollama）"
+                    exit 1
+                fi
             fi
         else
             rm -f "$TMP_TAR"
