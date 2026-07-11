@@ -95,12 +95,12 @@ if [ ! -f "$LLAMA_SERVER_BIN" ]; then
         TMP_TAR="/tmp/llama-server.tar.gz"
         # 显示进度条下载
         echo "     (若长时间无响应可按 Ctrl+C 取消)"
-        if command -v wget &>/dev/null; then
-            wget --no-check-certificate -q --show-progress -O "$TMP_TAR" "$DOWNLOAD_URL"
+        if command -v curl &>/dev/null; then
+            curl -L --progress-bar -o "$TMP_TAR" "$DOWNLOAD_URL"
             HTTP_CODE="$?"
             [ "$HTTP_CODE" = "0" ] && HTTP_CODE="200" || HTTP_CODE="000"
         else
-            curl -L --progress-bar -o "$TMP_TAR" "$DOWNLOAD_URL"
+            wget --no-check-certificate --show-progress -O "$TMP_TAR" "$DOWNLOAD_URL"
             HTTP_CODE="$?"
             [ "$HTTP_CODE" = "0" ] && HTTP_CODE="200" || HTTP_CODE="000"
         fi
@@ -161,12 +161,14 @@ if [ ! -f "$GGUF" ]; then
     # Try HuggingFace download
     HF_URL="$GGUF_URL"
     echo "   ⬇️  下载 embeddinggemma-300M-Q8_0 (~314MB) ..."
-    echo "     从 HuggingFace 下载，文件较大，耐心等待..."
+    echo "     从 HuggingFace 下载，国内可能较慢，耐心等待..."
+    echo "     (若长时间无进度可按 Ctrl+C 取消)"
     
-    if command -v wget &>/dev/null; then
-        wget --no-check-certificate -q --show-progress -O "$GGUF" "$HF_URL"
-    else
+    if command -v curl &>/dev/null; then
+        # curl 的进度条最可靠
         curl -L --progress-bar -o "$GGUF" "$HF_URL"
+    else
+        wget --no-check-certificate --show-progress -O "$GGUF" "$HF_URL"
     fi
     
     if [ -f "$GGUF" ] && [ -s "$GGUF" ]; then
