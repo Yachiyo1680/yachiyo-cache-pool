@@ -7,7 +7,8 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LLAMA_SERVER_BIN="$SCRIPT_DIR/bin/llama-server"
 MODEL_DIR="$SCRIPT_DIR/models"
-GGUF="$MODEL_DIR/embeddinggemma-300m-qat-Q8_0.gguf"
+GGUF="$MODEL_DIR/embeddinggemma-300M-Q8_0.gguf"
+GGUF_URL="https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf"
 PYTHON_DEPS=("flask" "requests")
 
 echo "🐙 ヤチヨのキャッシュプロキシ～☆"
@@ -25,8 +26,11 @@ done
 
 if $MISSING_DEPS; then
     echo "   → 安装 Python 依赖..."
+    # Try with --break-system-packages first (Debian/Ubuntu), fallback to normal
     pip3 install -r "$SCRIPT_DIR/requirements.txt" --break-system-packages -q 2>/dev/null || \
-    pip3 install flask requests --break-system-packages -q
+    pip3 install -r "$SCRIPT_DIR/requirements.txt" -q 2>/dev/null || \
+    pip3 install flask requests pyyaml --break-system-packages -q 2>/dev/null || \
+    pip3 install flask requests pyyaml -q
 fi
 echo "   ✅ Python 依赖已就绪"
 
@@ -36,44 +40,35 @@ if [ ! -f "$LLAMA_SERVER_BIN" ]; then
     echo "   → 未找到本地 llama-server，尝试自动下载..."
     mkdir -p "$SCRIPT_DIR/bin"
     
-    # 检测架构
+    # 检测架构和系统，确定要下载的包名
     ARCH=$(uname -m)
-    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
     
-    if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
-        BINARY="llama-server-$OS-aarch64"
-    elif [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "amd64" ]; then
-        BINARY="llama-server-$OS-x86_64"
-    else
-        echo "   ⚠️ 架构 $ARCH 没有预编译的 llama-server 二进制"
-        echo "   尝试从系统寻找..."
-        # Fallback: check common locations
-        for loc in /usr/local/lib/ollama/llama-server /usr/bin/llama-server /usr/local/bin/llama-server; do
-            if [ -f "$loc" ]; then
-                echo "   → 使用 $loc"
-                LLAMA_SERVER_BIN="$loc"
-                break
-            fi
-        done
-        if [ ! -f "$LLAMA_SERVER_BIN" ]; then
-            echo "❌ 找不到 llama-server，请手动编译:"
-            echo "   git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp && make llama-server"
-            echo "   然后把二进制放到 $SCRIPT_DIR/bin/"
-            exit 1
-        fi
+    # 动态获取最新版本号
+    echo "   → 查询最新版本..."
+    LLAMA_TAG=$(curl -sL "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('tag_name',''))" 2>/dev/null)
+    if [ -z "$LLAMA_TAG" ]; then
+        echo "   ⚠️ 无法获取最新版本号，使用默认 b9964"
+        LLAMA_TAG="b9964"
     fi
+    echo "   → 版本: $LLAMA_TAG"
     
-    if [ "$LLAMA_SERVER_BIN" = "$SCRIPT_DIR/bin/llama-server" ]; then
-        echo "   → 下载 $BINARY ..."
-        DOWNLOAD_URL="https://github.com/ggml-org/llama.cpp/releases/latest/download/$BINARY"
-        HTTP_CODE=$(curl -sL -o "$LLAMA_SERVER_BIN" -w "%{http_code}" "$DOWNLOAD_URL" 2>/dev/null || echo "000")
-        
-        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ]; then
-            chmod +x "$LLAMA_SERVER_BIN"
-            echo "   ✅ llama-server 下载成功"
-        else
-            rm -f "$LLAMA_SERVER_BIN"
-            echo "   ⚠️ 预编译二进制下载失败 (HTTP $HTTP_CODE)"
+    case "$ARCH" in
+        aarch64|arm64)
+            if [ "$(uname -s)" = "Darwin" ]; then
+                PKG="llama.cpp/releases/download/$LLAMA_TAG/llama-${LLAMA_TAG}-bin-macos-arm64.tar.gz"
+            else
+                PKG="llama.cpp/releases/download/$LLAMA_TAG/llama-${LLAMA_TAG}-bin-ubuntu-arm64.tar.gz"
+            fi
+            ;;
+        x86_64|amd64)
+            if [ "$(uname -s)" = "Darwin" ]; then
+                PKG="llama.cpp/releases/download/$LLAMA_TAG/llama-${LLAMA_TAG}-bin-macos-x64.tar.gz"
+            else
+                PKG="llama.cpp/releases/download/$LLAMA_TAG/llama-${LLAMA_TAG}-bin-ubuntu-x64.tar.gz"
+            fi
+            ;;
+        *)
+            echo "   ⚠️ 架构 $ARCH 没有预编译的 llama-server"
             echo "   尝试从系统寻找..."
             for loc in /usr/local/lib/ollama/llama-server /usr/bin/llama-server /usr/local/bin/llama-server; do
                 if [ -f "$loc" ]; then
@@ -84,9 +79,53 @@ if [ ! -f "$LLAMA_SERVER_BIN" ]; then
                 fi
             done
             if [ ! -f "$LLAMA_SERVER_BIN" ]; then
-                echo "❌ 无法获取 llama-server。你可以:"
-                echo "   1. 手动下载: https://github.com/ggml-org/llama.cpp/releases"
-                echo "   2. 或用 Ollama 的 embed 功能（改 cache_pool.py 的 USE_LLAMA_SERVER_DIRECT = False）"
+                echo "❌ 找不到 llama-server。可以:"
+                echo "   1. 从 GitHub Releases 手动下载: https://github.com/ggml-org/llama.cpp/releases"
+                echo "   2. 或改用 Ollama（编辑 config.yaml 设置 backend: ollama）"
+                exit 1
+            fi
+            ;;
+    esac
+    
+    if [ -n "$PKG" ]; then
+        DOWNLOAD_URL="https://github.com/ggml-org/$PKG"
+        echo "   → 下载 $(basename $PKG) ..."
+        TMP_TAR="/tmp/llama-server.tar.gz"
+        HTTP_CODE=$(curl -sL -o "$TMP_TAR" -w "%{http_code}" "$DOWNLOAD_URL" 2>/dev/null)
+        
+        if [ "$HTTP_CODE" = "200" ]; then
+            # 提取 llama-server 二进制
+            tar xzf "$TMP_TAR" -C "$SCRIPT_DIR/bin" --strip-components=1 "*/llama-server" 2>/dev/null
+            rm -f "$TMP_TAR"
+            if [ -f "$LLAMA_SERVER_BIN" ]; then
+                chmod +x "$LLAMA_SERVER_BIN"
+                echo "   ✅ llama-server 下载成功 ($(du -h "$LLAMA_SERVER_BIN" | cut -f1))"
+            else
+                echo "   ⚠️ 下载成功但解压失败，尝试从系统寻找..."
+                for loc in /usr/local/lib/ollama/llama-server /usr/bin/llama-server /usr/local/bin/llama-server; do
+                    if [ -f "$loc" ]; then
+                        cp "$loc" "$LLAMA_SERVER_BIN"
+                        chmod +x "$LLAMA_SERVER_BIN"
+                        echo "   → 使用 $loc"
+                        break
+                    fi
+                done
+            fi
+        else
+            rm -f "$TMP_TAR"
+            echo "   ⚠️ 下载失败 (HTTP $HTTP_CODE)，尝试从系统寻找..."
+            for loc in /usr/local/lib/ollama/llama-server /usr/bin/llama-server /usr/local/bin/llama-server; do
+                if [ -f "$loc" ]; then
+                    cp "$loc" "$LLAMA_SERVER_BIN"
+                    chmod +x "$LLAMA_SERVER_BIN"
+                    echo "   → 使用 $loc"
+                    break
+                fi
+            done
+            if [ ! -f "$LLAMA_SERVER_BIN" ]; then
+                echo "❌ 无法获取 llama-server。可以:"
+                echo "   1. 从 GitHub Releases 手动下载: https://github.com/ggml-org/llama.cpp/releases"
+                echo "   2. 或改用 Ollama（编辑 config.yaml 设置 backend: ollama）"
                 exit 1
             fi
         fi
@@ -102,7 +141,7 @@ if [ ! -f "$GGUF" ]; then
     mkdir -p "$MODEL_DIR"
     
     # Try HuggingFace download
-    HF_URL="https://huggingface.co/ggml-org/embeddinggemma-300m-qat/resolve/main/embeddinggemma-300m-qat-Q8_0.gguf"
+    HF_URL="$GGUF_URL"
     echo "   ⬇️  下载中 (这可能需要几分钟)..."
     
     # Use curl with progress bar
