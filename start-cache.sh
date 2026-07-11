@@ -1,16 +1,52 @@
 #!/bin/bash
-# 🐙 一键启动缓存代理 + 切换 OpenClaw
-# Iroha 用这个来开启缓存省钱模式～
+# 🐙 一键启动 llama-server + 缓存代理
+# Yachiyo's Cache Pool 启动脚本
+
+set -e
 
 echo "🐙 ヤチヨのキャッシュプロキシ～☆"
-echo "=============================="
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# Step 1: Start the cache proxy
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LLAMA_SERVER="/usr/local/lib/ollama/llama-server"
+GGUF="/home/pi/.node-llama-cpp/models/hf_ggml-org_embeddinggemma-300m-qat-Q8_0.gguf"
+
+# Step 0: Check GGUF exists
+if [ ! -f "$GGUF" ]; then
+    echo "❌ GGUF 文件不存在: $GGUF"
+    echo "   请先下载 embeddinggemma Q8_0 模型"
+    exit 1
+fi
+
+# Step 1: Start llama-server if not already running
+if curl -s http://localhost:8080/health > /dev/null 2>&1; then
+    echo "✅ llama.cpp server (端口 8080) 已在运行中"
+else
+    echo "🚀 启动 llama.cpp embedding server..."
+    nohup "$LLAMA_SERVER" \
+        --model "$GGUF" --port 8080 --host 127.0.0.1 \
+        --embedding --ctx-size 512 --batch-size 512 \
+        --threads 4 --no-webui --no-mmap \
+        --log-disable --pooling mean --embd-normalize 2 \
+        > /dev/null 2>&1 &
+    LLAMA_PID=$!
+    echo "   PID: $LLAMA_PID"
+    sleep 3
+    
+    if curl -s http://localhost:8080/health > /dev/null 2>&1; then
+        echo "✅ llama.cpp server 启动成功"
+    else
+        echo "❌ llama-server 启动失败"
+        exit 1
+    fi
+fi
+
+# Step 2: Start the cache proxy
 if curl -s http://localhost:18791/health > /dev/null 2>&1; then
-    echo "✅ 缓存代理已在运行中"
+    echo "✅ 缓存代理 (端口 18791) 已在运行中"
 else
     echo "🚀 启动缓存代理..."
-    nohup python3 "$(dirname "$0")/cache_proxy.py" > /tmp/cache_proxy.log 2>&1 &
+    nohup python3 "$SCRIPT_DIR/cache_proxy.py" > /tmp/cache_proxy.log 2>&1 &
     sleep 3
     if curl -s http://localhost:18791/health > /dev/null 2>&1; then
         echo "✅ 缓存代理启动成功"
@@ -20,26 +56,19 @@ else
     fi
 fi
 
-# Step 2: Check current config
+# Step 3: Show status
 echo ""
-echo "📋 OpenClaw 配置状态:"
-# Verify models order
-python3 -c "
-import json
-with open('$HOME/.openclaw/openclaw.json') as f:
-    c = json.load(f)
-models = list(c['agents']['defaults']['models'].keys())
-ds = c['models']['providers']['deepseek']['baseUrl']
-ds_c = c['models']['providers'].get('deepseek-cached',{}).get('baseUrl','')
-print(f'  原生 DeepSeek:  {ds}')
-print(f'  缓存版 DeepSeek: {ds_c}')
-print(f'  首选模型: {models[0]}')
-print(f'  Fallback: {models[1]}')
-"
-
+echo "📊 状态总览:"
+echo "   🧠 Embedding:  http://localhost:8080/v1/embeddings (Q8_0)"
+echo "   🚀 缓存代理:   http://localhost:18791"
+echo "   💾 数据库:     $SCRIPT_DIR/cache.db"
+echo "   📊 命中日志:   $SCRIPT_DIR/cache_hit.log"
 echo ""
-echo "🎯 已就绪！OpenClaw 将优先走缓存"
-echo "   如果代理挂了自动退回原生 API"
+echo "📋 使用说明:"
+echo "   将 OpenClaw 配置中的 baseUrl 改为:"
+echo "   http://localhost:18791"
 echo ""
-echo "🔍 查看代理日志: tail -f /tmp/cache_proxy.log"
-echo "📊 查看缓存统计: curl -s http://localhost:18791/health | python3 -m json.tool"
+echo "🔍 查看日志:  tail -f /tmp/cache_proxy.log"
+echo "📊 查看统计:  curl -s http://localhost:18791/health | python3 -m json.tool"
+echo ""
+echo "🐙 感谢 感激 雨アラモード～☆"

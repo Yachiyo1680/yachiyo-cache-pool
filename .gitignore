@@ -4,3 +4,6 @@
 *.db-shm
 __pycache__/
 *.pyc
+cache_hit.log
+*.old.log
+__pycache__/

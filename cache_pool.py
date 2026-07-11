@@ -20,8 +20,10 @@ import urllib.error
 # === Configuration ===
 DB_PATH = os.path.expanduser("~/.openclaw/workspace/cache-pool/cache.db")
 OLLAMA_URL = "http://localhost:11434/api/embeddings"
+LLAMA_SERVER_URL = "http://localhost:8080/v1/embeddings"
+USE_LLAMA_SERVER_DIRECT = True  # True = llama.cpp server, False = Ollama
 EMBED_MODEL = "bge-m3"
-SIMILARITY_THRESHOLD = 0.80  # Only return cached result if similar enough
+SIMILARITY_THRESHOLD = 0.92  # Only return cached result if similar enough
 DEFAULT_TTL = 86400 * 7      # 7 days default TTL
 MAX_RESULTS = 5
 
@@ -55,25 +57,43 @@ def _init_schema(conn):
 
 # === Embedding ===
 def get_embedding(text: str) -> list:
-    """Get embedding vector from local Ollama."""
-    data = json.dumps({
-        "model": EMBED_MODEL,
-        "prompt": text
-    }).encode("utf-8")
-    
-    req = urllib.request.Request(
-        OLLAMA_URL,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST"
-    )
-    
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            result = json.loads(resp.read())
-            return result["embedding"]
-    except Exception as e:
-        raise RuntimeError(f"Ollama embedding failed: {e}")
+    """Get embedding vector from local llama-server or Ollama."""
+    if USE_LLAMA_SERVER_DIRECT:
+        # llama.cpp server: /v1/embeddings (OpenAI-compatible)
+        data = json.dumps({
+            "input": text,
+            "model": "embeddinggemma"
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            LLAMA_SERVER_URL,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                result = json.loads(resp.read())
+                return result["data"][0]["embedding"]
+        except Exception as e:
+            raise RuntimeError(f"llama-server embedding failed: {e}")
+    else:
+        # Ollama API
+        data = json.dumps({
+            "model": EMBED_MODEL,
+            "prompt": text
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            OLLAMA_URL,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                result = json.loads(resp.read())
+                return result["embedding"]
+        except Exception as e:
+            raise RuntimeError(f"Ollama embedding failed: {e}")
 
 def cosine_similarity(a: list, b: list) -> float:
     """Calculate cosine similarity between two vectors."""

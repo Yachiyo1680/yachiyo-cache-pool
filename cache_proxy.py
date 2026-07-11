@@ -31,10 +31,11 @@ cp.EMBED_MODEL = "embeddinggemma:300m-qat-q4_0"
 
 # === Configuration ===
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-PROXY_HOST = "0.0.0.0"  # Allow connections from localhost only is fine
+PROXY_HOST = "0.0.0.0"
 PROXY_PORT = 18791
-CACHE_NON_STREAMING = True  # Cache non-streaming responses
-CACHE_STREAMING = False     # Pass through streaming without caching
+CACHE_NON_STREAMING = True
+CACHE_STREAMING = False
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache_hit.log")
 
 app = Flask(__name__)
 
@@ -44,6 +45,24 @@ deepseek_api_key = None
 def log(msg: str):
     """Simple log with timestamp."""
     print(f"[{time.strftime('%H:%M:%S')}] 🐙 {msg}", flush=True)
+
+def log_hit(match_type: str, query: str, similarity: float = None, token_saved: int = 0):
+    """Append a structured cache hit/miss entry to the log file."""
+    import csv
+    now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+    sim_str = f"{similarity:.4f}" if similarity else "N/A"
+    token_str = str(token_saved) if match_type != "miss" else "0"
+    line = f"[{now_str}] {match_type.upper():6s} | sim={sim_str} | saved=~{token_str} tokens | query={query[:120]} " + (f"| full_query={repr(query)}" if len(query) > 120 else "")
+    
+    # Write to log file (rotate if > 5MB)
+    try:
+        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 5 * 1024 * 1024:
+            base, ext = os.path.splitext(LOG_FILE)
+            os.rename(LOG_FILE, f"{base}.old{ext}")
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception as e:
+        print(f"[LOG ERROR] {e}", flush=True)
 
 def extract_last_user_message(messages: list) -> str:
     """Extract the last user message as plain text for caching."""
@@ -90,7 +109,31 @@ def is_cacheable_request(body: dict) -> bool:
 
 def build_response_from_cache(cached: dict, original_body: dict) -> tuple:
     """Build a proper HTTP response from cached data."""
-    cached_response = json.loads(cached["response"])
+    try:
+        cached_response = json.loads(cached["response"])
+    except (json.JSONDecodeError, TypeError, KeyError):
+        # Plain text cached response - wrap in OpenAI format
+        resp_text = str(cached.get("response", ""))
+        cached_response = {
+            "id": f"chatcmpl-cache-{int(time.time())}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": original_body.get("model", "cached-model"),
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": resp_text
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0
+            }
+        }
+        return jsonify(cached_response), 200, {"X-Cache": str(cached["match_type"])}
     
     # Update response id and created timestamp for freshness
     cached_response["id"] = f"chatcmpl-cache-{int(time.time())}"
@@ -267,11 +310,17 @@ def chat_completions():
         if cache_result["hit"]:
             match_type = cache_result.get("match_type", "unknown")
             match_info = cache_result.get("similarity", "")
-            log(f"🎯 缓存命中! ({match_type})" + (f" sim={match_info}" if match_info else ""))
+            # Estimate tokens saved (~2x response length in chars)
+            resp_text = cache_result.get("response", "")
+            token_saved = len(resp_text) // 2 if resp_text else 0
+            log_info = f" sim={match_info}" if match_info else ""
+            log(f"🎯 缓存命中! ({match_type})" + log_info + f" saved=~{token_saved}tokens")
+            log_hit(match_type, user_query, match_info or None, token_saved)
             return build_response_from_cache(cache_result, body)
     
     # Cache miss → forward to DeepSeek
     log("🔍 缓存未命中 → 请求 DeepSeek API")
+    log_hit("miss", user_query)
     return forward_to_deepseek(headers, body)
 
 @app.route("/v1/chat/completions", methods=["POST"])
@@ -336,8 +385,12 @@ def run():
     log(f"🚀 缓存代理启动: http://{PROXY_HOST}:{PROXY_PORT}")
     log(f"   ➡️ 上游: {DEEPSEEK_BASE_URL}")
     log(f"   💾 缓存: {cp.DB_PATH}")
-    log(f"   🧠 Embedding: {cp.EMBED_MODEL} (Ollama)")
+    if cp.USE_LLAMA_SERVER_DIRECT:
+        log(f"   🧠 Embedding: llama.cpp server (localhost:8080, Q8_0)")
+    else:
+        log(f"   🧠 Embedding: {cp.EMBED_MODEL} (Ollama)")
     log(f"   🎯 相似度阈值: {cp.SIMILARITY_THRESHOLD}")
+    log(f"   📊 命中日志: {LOG_FILE}")
     log(f"   ⏱️ TTL: {cp.DEFAULT_TTL // 86400} 天")
     log("")
     log(f"📋 使用说明: 将 OpenClaw 配置中的 baseUrl 改为")
