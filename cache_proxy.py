@@ -354,6 +354,19 @@ def _try_cache_response(body: dict, response_data: dict):
     except Exception as e:
         log(f"⚠️ 缓存写入出错 (忽略): {e}")
 
+@app.route("/v1/models", methods=["GET"])
+def list_models():
+    """Return available models (for Open WebUI compatibility)."""
+    return jsonify({
+        "object": "list",
+        "data": [
+            {"id": "deepseek-v4-flash", "object": "model"},
+            {"id": "deepseek-v4-pro", "object": "model"},
+            {"id": "gpt-5.4-mini", "object": "model"},
+            {"id": "gpt-5.6-luna", "object": "model"},
+        ]
+    })
+
 @app.route("/health", methods=["GET"])
 def health():
     """Health check endpoint."""
