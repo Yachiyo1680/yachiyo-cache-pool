@@ -29,7 +29,7 @@
 
 ```bash
 # GGUF 文件路径
-GGUF="/home/pi/.node-llama-cpp/models/hf_ggml-org_embeddinggemma-300m-qat-Q8_0.gguf"
+GGUF="~/.node-llama-cpp/models/hf_ggml-org_embeddinggemma-300m-qat-Q8_0.gguf"
 
 # 启动服务（CPU 推理，仅 embedding 模式）
 nohup /usr/local/lib/ollama/llama-server \

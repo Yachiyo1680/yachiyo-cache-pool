@@ -9,7 +9,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LLAMA_SERVER="/usr/local/lib/ollama/llama-server"
-GGUF="/home/pi/.node-llama-cpp/models/hf_ggml-org_embeddinggemma-300m-qat-Q8_0.gguf"
+GGUF="$HOME/.node-llama-cpp/models/hf_ggml-org_embeddinggemma-300m-qat-Q8_0.gguf"
 
 # Step 0: Check GGUF exists
 if [ ! -f "$GGUF" ]; then
