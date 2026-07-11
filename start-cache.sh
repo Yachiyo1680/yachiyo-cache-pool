@@ -89,9 +89,21 @@ if [ ! -f "$LLAMA_SERVER_BIN" ]; then
     
     if [ -n "$PKG" ]; then
         DOWNLOAD_URL="https://github.com/ggml-org/$PKG"
-        echo "   → 下载 $(basename $PKG) ..."
+        PKG_SIZE="$(basename $PKG) (~15MB)"
+        echo "   → 下载 $PKG_SIZE ..."
+        echo "     从 GitHub Releases 下载，国内可能稍慢，请稍候..."
         TMP_TAR="/tmp/llama-server.tar.gz"
-        HTTP_CODE=$(curl -sL -o "$TMP_TAR" -w "%{http_code}" "$DOWNLOAD_URL" 2>/dev/null)
+        # 显示进度条下载
+        echo "     (若长时间无响应可按 Ctrl+C 取消)"
+        if command -v wget &>/dev/null; then
+            wget --no-check-certificate -q --show-progress -O "$TMP_TAR" "$DOWNLOAD_URL"
+            HTTP_CODE="$?"
+            [ "$HTTP_CODE" = "0" ] && HTTP_CODE="200" || HTTP_CODE="000"
+        else
+            curl -L --progress-bar -o "$TMP_TAR" "$DOWNLOAD_URL"
+            HTTP_CODE="$?"
+            [ "$HTTP_CODE" = "0" ] && HTTP_CODE="200" || HTTP_CODE="000"
+        fi
         
         if [ "$HTTP_CODE" = "200" ]; then
             # 提取 llama-server 二进制
@@ -142,13 +154,13 @@ if [ ! -f "$GGUF" ]; then
     
     # Try HuggingFace download
     HF_URL="$GGUF_URL"
-    echo "   ⬇️  下载中 (这可能需要几分钟)..."
+    echo "   ⬇️  下载 embeddinggemma-300M-Q8_0 (~314MB) ..."
+    echo "     从 HuggingFace 下载，文件较大，耐心等待..."
     
-    # Use curl with progress bar
     if command -v wget &>/dev/null; then
-        wget -q --show-progress "$HF_URL" -O "$GGUF" 2>&1
+        wget --no-check-certificate -q --show-progress -O "$GGUF" "$HF_URL"
     else
-        curl -sL -o "$GGUF" "$HF_URL" 2>&1
+        curl -L --progress-bar -o "$GGUF" "$HF_URL"
     fi
     
     if [ -f "$GGUF" ] && [ -s "$GGUF" ]; then
