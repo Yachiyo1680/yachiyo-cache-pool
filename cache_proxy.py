@@ -204,7 +204,7 @@ def build_response_from_cache(cached: dict, original_body: dict) -> tuple:
     return jsonify(cached_response), 200, {"X-Cache": str(cached["match_type"])}
 
 def forward_to_deepseek(headers: dict, body: dict) -> Response:
-    """Forward the request to actual DeepSeek API and return response."""
+    """Forward the request to actual upstream API and return response."""
     target_url = f"{DEEPSEEK_BASE_URL}/chat/completions"
     
     # Forward the request
@@ -290,15 +290,15 @@ def forward_to_deepseek(headers: dict, body: dict) -> Response:
             return flask_resp
     
     except requests.exceptions.Timeout:
-        log("⚠️ DeepSeek API 超时！")
+        log(f"⚠️ 上游 API 超时！({DEEPSEEK_BASE_URL})")
         return jsonify({
             "error": {"message": "Upstream request timed out", "type": "timeout"}
         }), 504
     
     except requests.exceptions.ConnectionError:
-        log("❌ DeepSeek API 连接失败！")
+        log(f"❌ 上游 API 连接失败！({DEEPSEEK_BASE_URL})")
         return jsonify({
-            "error": {"message": "Cannot connect to DeepSeek API", "type": "connection_error"}
+            "error": {"message": f"Cannot connect to upstream ({DEEPSEEK_BASE_URL})", "type": "connection_error"}
         }), 502
     
     except Exception as e:
@@ -430,7 +430,7 @@ def v1_chat_completions():
 
 @app.route("/v1/embeddings", methods=["POST"])
 def embeddings():
-    """Forward embedding requests to DeepSeek (no caching for now)."""
+    """Forward embedding requests to upstream (no caching for now)."""
     global deepseek_api_key
     headers = dict(request.headers)
     auth = headers.get("Authorization", "")
@@ -453,7 +453,7 @@ def embeddings():
 
 @app.route("/<path:path>", methods=["GET", "POST", "PUT", "DELETE"])
 def catch_all(path):
-    """Forward any other requests to DeepSeek."""
+    """Forward any other requests to upstream."""
     global deepseek_api_key
     headers = dict(request.headers)
     auth = headers.get("Authorization", "")
