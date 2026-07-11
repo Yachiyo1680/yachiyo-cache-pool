@@ -2,68 +2,40 @@
 
 > Yachiyo's Local Semantic Cache Proxy
 
-基于 **llama.cpp server** 的语义缓存代理层。对 API 请求做精确匹配 + 语义相似度搜索，命中时 **0 tokens 返回**，不命中时透明转发上游 API 并自动缓存。
+开包即用的语义缓存代理层。克隆下来一行命令就能跑。
+
+对 API 请求做精确匹配 + 语义相似度搜索，命中时 **0 tokens 返回**，不命中时透明转发上游 API 并自动缓存。
+
+## 快速开始
+
+```bash
+git clone https://github.com/Yachiyo1680/yachiyo-cache-pool
+cd yachiyo-cache-pool
+bash start-cache.sh
+```
+
+启动脚本会自动：
+1. ✅ 安装 Python 依赖（Flask + requests）
+2. ✅ 下载 llama.cpp server 二进制
+3. ✅ 下载 embeddinggemma Q8_0 模型（~314MB）
+4. ✅ 启动 embedding server（端口 8080）
+5. ✅ 启动缓存代理（端口 18791）
+
+全部一行搞定，无需手动配置。
 
 ## 架构
 
 ```
 请求 → cache_proxy (localhost:18791)
            ↓
-    语义缓存 (embeddinggemma + SQLite)
+    语义缓存 (embeddinggemma + llama.cpp + SQLite)
            ↓  ┌─────────────────────────────┐
     命中？ → 是 → 0 tokens 返回 ✅
            ↓ 否
-    转发 DeepSeek API → 自动缓存 → 返回
+    转发 LLM API → 自动缓存 → 返回
 ```
 
-- 🧠 **Embedding**: `embeddinggemma-300m-qat-Q8_0` (llama.cpp server, 768维, 本地推理)
-- 💾 **存储**: SQLite (WAL 模式, 向量和内联存储)
-- 🎯 **精确匹配**: SHA-256 hash，零开销命中
-- 🔍 **语义匹配**: 余弦相似度，阈值 0.92（可调）
-- 📊 **命中日志**: `cache_hit.log` — 记录每次命中/未命中及预估节省 Token
-- ⏱ **TTL**: 7 天自动过期
-
-## 快速上手
-
-### 前置：启动 llama.cpp embedding server
-
-```bash
-# GGUF 文件路径
-GGUF="~/.node-llama-cpp/models/hf_ggml-org_embeddinggemma-300m-qat-Q8_0.gguf"
-
-# 启动服务（CPU 推理，仅 embedding 模式）
-nohup /usr/local/lib/ollama/llama-server \
-  --model "$GGUF" --port 8080 --host 127.0.0.1 \
-  --embedding --ctx-size 512 --batch-size 512 \
-  --threads 4 --no-webui --no-mmap \
-  --pooling mean --embd-normalize 2 \
-  > /dev/null 2>&1 &
-
-# 验证
-curl -X POST http://localhost:8080/v1/embeddings \
-  -H "Content-Type: application/json" \
-  -d '{"input":"你好","model":"embeddinggemma"}'
-```
-
-### 启动缓存代理
-
-```bash
-python3 cache_proxy.py
-# 或
-bash start-cache.sh
-```
-
-### 配置上游指向 localhost:18791
-
-在你的应用中将 `base_url` 改为：
-
-```
-http://localhost:18791
-```
-
-API Key 自动透传，无需额外配置。
-
-### 手动操作缓存
+## 手动操作缓存
 
 ```bash
 bash cache.sh stats           # 查看统计
@@ -77,20 +49,22 @@ bash cache.sh clean           # 清理过期
 
 | 文件 | 说明 |
 |:----|:-----|
-| `cache_pool.py` | 核心库：embedding + 数据库 + 搜索/存储 |
-| `cache_proxy.py` | HTTP 代理服务器（Flask），带命中日志 |
-| `cache_hit.log` | 命中/未命中日志（自动生成，>5MB 轮转） |
+| `start-cache.sh` | 一键启动脚本（自动下载所有依赖） |
+| `cache_pool.py` | 核心库：embedding + SQLite + 搜索/存储 |
+| `cache_proxy.py` | HTTP 代理服务器（Flask，OpenAI 兼容） |
 | `cache.sh` | 手动操作 CLI |
+| `requirements.txt` | Python 依赖 |
+| `models/` | 自动下载的 GGUF 模型放这里 |
+| `bin/` | 自动下载的 llama-server 二进制放这里 |
+| `cache_hit.log` | 命中/未命中日志（自动生成，>5MB 轮转） |
 
 ## 配置
 
 在 `cache_pool.py` 中可调参数：
 
 ```python
-SIMILARITY_THRESHOLD = 0.92     # 语义匹配阈值（技术问答建议 0.92+）
-USE_LLAMA_SERVER_DIRECT = True  # True=llama.cpp server, False=Ollama
-LLAMA_SERVER_URL = "http://localhost:8080/v1/embeddings"
-OLLAMA_URL = "http://localhost:11434/api/embeddings"  # Fallback
+SIMILARITY_THRESHOLD = 0.92     # 语义匹配阈值
+EMBED_MODEL = "embeddinggemma"   # embedding 模型名（llama-server 用）
 DEFAULT_TTL = 86400 * 7         # 缓存有效期（秒）
 ```
 
@@ -117,6 +91,14 @@ Content-Type: application/json
 ```
 
 响应头 `X-Cache: exact` / `X-Cache: semantic` / `X-Cache: miss` 标识命中来源。
+
+## 系统要求
+
+- Linux x86_64 或 arm64/aarch64
+- Python 3.8+
+- curl
+- 约 500MB 磁盘空间（含模型文件）
+- 约 500MB 内存
 
 ## License
 

@@ -1,9 +1,10 @@
-# Cache files
-*.db
-*.db-wal
-*.db-shm
 __pycache__/
 *.pyc
+.cache
 cache_hit.log
 *.old.log
+bin/
+models/*.gguf
+models/*.bin
+*.db
 __pycache__/
