@@ -26,16 +26,17 @@ import urllib.parse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cache_pool as cp
 
-# Override embedding model to use lighter embeddinggemma
-cp.EMBED_MODEL = "embeddinggemma:300m-qat-q4_0"
+# Override embedding model from config
+cp.EMBED_MODEL = cp.CFG["embedding"].get("ollama_model", "embeddinggemma:300m-qat-q4_0")
 
-# === Configuration ===
-DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-PROXY_HOST = "0.0.0.0"
-PROXY_PORT = 18791
-CACHE_NON_STREAMING = True
-CACHE_STREAMING = False
-LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache_hit.log")
+# === Configuration (从 config.yaml 读取) ===
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEEPSEEK_BASE_URL = cp.CFG["upstream"]["base_url"]
+PROXY_HOST = cp.CFG["proxy"]["host"]
+PROXY_PORT = cp.CFG["proxy"]["port"]
+CACHE_NON_STREAMING = cp.CFG["proxy"]["cache_non_streaming"]
+CACHE_STREAMING = cp.CFG["proxy"]["cache_streaming"]
+LOG_FILE = os.path.join(SCRIPT_DIR, "cache_hit.log")
 
 app = Flask(__name__)
 
@@ -382,11 +383,13 @@ def catch_all(path):
 
 def run():
     """Start the proxy server."""
+    config_path = os.path.join(SCRIPT_DIR, "config.yaml")
     log(f"🚀 缓存代理启动: http://{PROXY_HOST}:{PROXY_PORT}")
     log(f"   ➡️ 上游: {DEEPSEEK_BASE_URL}")
     log(f"   💾 缓存: {cp.DB_PATH}")
+    log(f"   ⚙️ 配置: {config_path}")
     if cp.USE_LLAMA_SERVER_DIRECT:
-        log(f"   🧠 Embedding: llama.cpp server (localhost:8080, Q8_0)")
+        log(f"   🧠 Embedding: llama.cpp server ({cp.LLAMA_SERVER_URL}, Q8_0)")
     else:
         log(f"   🧠 Embedding: {cp.EMBED_MODEL} (Ollama)")
     log(f"   🎯 相似度阈值: {cp.SIMILARITY_THRESHOLD}")

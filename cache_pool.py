@@ -3,8 +3,7 @@
 🦞 Yachiyo's Local Cache Pool
 ローカルキャッシュプール～☆
 
-A semantic cache for API responses, using local Ollama embeddings (bge-m3).
-Reduces duplicate API calls and saves tokens!
+A semantic cache for API responses. Reduces duplicate API calls and saves tokens!
 """
 
 import json
@@ -17,14 +16,74 @@ import math
 import urllib.request
 import urllib.error
 
-# === Configuration ===
-DB_PATH = os.path.expanduser("~/.openclaw/workspace/cache-pool/cache.db")
-OLLAMA_URL = "http://localhost:11434/api/embeddings"
-LLAMA_SERVER_URL = "http://localhost:8080/v1/embeddings"
-USE_LLAMA_SERVER_DIRECT = True  # True = llama.cpp server, False = Ollama
-EMBED_MODEL = "bge-m3"
-SIMILARITY_THRESHOLD = 0.92  # Only return cached result if similar enough
-DEFAULT_TTL = 86400 * 7      # 7 days default TTL
+# === Configuration (从 config.yaml 加载) ===
+def load_config():
+    """Load config from config.yaml or return defaults."""
+    # Look for config.yaml next to this file
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    config_path = os.path.join(script_dir, "config.yaml")
+    
+    defaults = {
+        "embedding": {
+            "backend": "llama-server",
+            "llama_url": "http://localhost:8080/v1/embeddings",
+            "ollama_url": "http://localhost:11434/api/embeddings",
+            "ollama_model": "embeddinggemma:300m-qat-q4_0"
+        },
+        "cache": {
+            "similarity_threshold": 0.92,
+            "ttl_seconds": 604800
+        },
+        "proxy": {
+            "host": "0.0.0.0",
+            "port": 18791,
+            "cache_non_streaming": True,
+            "cache_streaming": False
+        },
+        "upstream": {
+            "base_url": "https://api.deepseek.com",
+            "timeout_seconds": 120
+        }
+    }
+    
+    if not os.path.exists(config_path):
+        return defaults
+    
+    try:
+        import yaml
+        with open(config_path, "r", encoding="utf-8") as f:
+            user_config = yaml.safe_load(f) or {}
+        # Merge: user config overrides defaults
+        merged = defaults
+        for section, values in user_config.items():
+            if section in merged and isinstance(values, dict):
+                merged[section].update(values)
+            else:
+                merged[section] = values
+        return merged
+    except ImportError:
+        print("⚠️ pyyaml 未安装，使用默认配置。pip install pyyaml")
+        return defaults
+    except Exception as e:
+        print(f"⚠️ 配置文件读取失败: {e}，使用默认配置")
+        return defaults
+
+CFG = load_config()
+
+# === 将配置展开为模块变量 ===
+_embed = CFG["embedding"]
+_cache = CFG["cache"]
+_proxy = CFG["proxy"]
+_upstream = CFG["upstream"]
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(SCRIPT_DIR, "cache.db")
+OLLAMA_URL = _embed["ollama_url"]
+LLAMA_SERVER_URL = _embed["llama_url"]
+USE_LLAMA_SERVER_DIRECT = _embed["backend"] == "llama-server"
+EMBED_MODEL = _embed.get("ollama_model", "bge-m3")
+SIMILARITY_THRESHOLD = _cache["similarity_threshold"]
+DEFAULT_TTL = _cache["ttl_seconds"]
 MAX_RESULTS = 5
 
 # === SQLite Setup ===

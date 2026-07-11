@@ -1,0 +1,36 @@
+# 🐙 Yachiyo's Cache Pool 配置文件
+# 改这个文件就行，不用碰 Python 代码
+
+# === Embedding 服务 ===
+embedding:
+  # 后端: "llama-server" 或 "ollama"
+  backend: "llama-server"
+  # llama-server 地址（backend=llama-server 时生效）
+  llama_url: "http://localhost:8080/v1/embeddings"
+  # Ollama 地址（backend=ollama 时生效）
+  ollama_url: "http://localhost:11434/api/embeddings"
+  ollama_model: "embeddinggemma:300m-qat-q4_0"
+
+# === 缓存策略 ===
+cache:
+  # 语义匹配阈值（0.0~1.0）
+  # 闲聊 0.85 / 通用 0.92 / 技术 0.94 / 代码 0.95+
+  similarity_threshold: 0.92
+  # 缓存有效期（秒，默认 7 天）
+  ttl_seconds: 604800
+
+# === 代理服务 ===
+proxy:
+  host: "0.0.0.0"
+  port: 18791
+  # 是否缓存非流式请求
+  cache_non_streaming: true
+  # 是否缓存流式请求（一般不建议）
+  cache_streaming: false
+
+# === 上游 API ===
+upstream:
+  # 默认上游 API 地址
+  base_url: "https://api.deepseek.com"
+  # 超时秒数
+  timeout_seconds: 120

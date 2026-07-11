@@ -60,12 +60,22 @@ bash cache.sh clean           # 清理过期
 
 ## 配置
 
-在 `cache_pool.py` 中可调参数：
+编辑 `config.yaml` 即可，不用碰 Python 代码：
 
-```python
-SIMILARITY_THRESHOLD = 0.92     # 语义匹配阈值
-EMBED_MODEL = "embeddinggemma"   # embedding 模型名（llama-server 用）
-DEFAULT_TTL = 86400 * 7         # 缓存有效期（秒）
+```yaml
+embedding:
+  backend: "llama-server"        # 或 "ollama"
+  llama_url: "http://localhost:8080/v1/embeddings"
+
+cache:
+  similarity_threshold: 0.92     # 闲聊0.85 / 通用0.92 / 技术0.94
+  ttl_seconds: 604800            # 7天
+
+proxy:
+  port: 18791
+
+upstream:
+  base_url: "https://api.deepseek.com"
 ```
 
 ## 命中日志示例

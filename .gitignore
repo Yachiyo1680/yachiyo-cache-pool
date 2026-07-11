@@ -8,3 +8,4 @@ models/*.gguf
 models/*.bin
 *.db
 __pycache__/
+*.db
