@@ -344,7 +344,7 @@ def stats() -> dict:
             "oldest_entry": oldest,
             "newest_entry": newest,
             "db_path": DB_PATH,
-            "embed_model": EMBED_MODEL,
+            "embed_model": "llama.cpp Q8_0" if USE_LLAMA_SERVER_DIRECT else EMBED_MODEL,
             "similarity_threshold": SIMILARITY_THRESHOLD
         }
     finally:
