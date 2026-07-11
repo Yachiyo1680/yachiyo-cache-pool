@@ -93,10 +93,6 @@ def include_system_context(messages: list) -> str:
 
 def is_cacheable_request(body: dict) -> bool:
     """Check if this request is worth caching."""
-    # Don't cache streaming requests (unless configured)
-    if body.get("stream", False) and not CACHE_STREAMING:
-        return False
-    
     # Don't cache if explicitly told not to
     if body.get("cache", {}).get("disable") == True:
         return False
@@ -107,6 +103,62 @@ def is_cacheable_request(body: dict) -> bool:
         return False
     
     return True
+
+def build_streaming_from_cache(cached: dict, original_body: dict) -> Response:
+    """Build a streaming SSE response from cached data."""
+    try:
+        cached_response = json.loads(cached["response"])
+        content = cached_response["choices"][0]["message"]["content"]
+    except (json.JSONDecodeError, TypeError, KeyError):
+        content = str(cached.get("response", ""))
+    
+    model = original_body.get("model", "cached-model")
+    now = int(time.time())
+    match_type = str(cached.get("match_type", "hit"))
+    
+    def generate():
+        # Send content in character chunks (works for both Chinese and English)
+        chunk_size = 8  # chars per chunk for natural streaming feel
+        for i in range(0, len(content), chunk_size):
+            chunk_text = content[i:i + chunk_size]
+            chunk = {
+                "id": f"chatcmpl-cache-{now}",
+                "object": "chat.completion.chunk",
+                "created": now,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": chunk_text},
+                    "finish_reason": None
+                }]
+            }
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        
+        # Done signal
+        final = {
+            "id": f"chatcmpl-cache-{now}",
+            "object": "chat.completion.chunk",
+            "created": now,
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "stop"
+            }]
+        }
+        yield f"data: {json.dumps(final, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+    
+    return Response(
+        generate(),
+        status=200,
+        headers={
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Cache": match_type
+        }
+    )
 
 def build_response_from_cache(cached: dict, original_body: dict) -> tuple:
     """Build a proper HTTP response from cached data."""
@@ -287,40 +339,37 @@ def chat_completions():
     if auth.startswith("Bearer "):
         deepseek_api_key = auth[7:]
     
-    # Don't cache streaming requests (pass through)
-    if body.get("stream", False):
-        log("🔄 流式请求 → 直通转发")
-        return forward_to_deepseek(headers, body)
-    
-    # Check if this is cacheable
-    if not is_cacheable_request(body):
-        log("⏭️ 不可缓存请求 → 直通转发")
-        return forward_to_deepseek(headers, body)
-    
-    # Try cache lookup using last user message
+    is_stream = body.get("stream", False)
     messages = body.get("messages", [])
     user_query = extract_last_user_message(messages)
     
-    if user_query:
+    # Try cache lookup for ALL requests (streaming or not)
+    cache_hit = False
+    cache_result = None
+    
+    if user_query and is_cacheable_request(body):
         try:
             cache_result = cp.search(user_query, model=body.get("model", ""))
+            cache_hit = cache_result["hit"]
         except Exception as e:
-            log(f"⚠️ 缓存搜索出错 (直通转发): {e}")
-            return forward_to_deepseek(headers, body)
+            log(f"⚠️ 缓存搜索出错: {e}")
+    
+    if cache_hit:
+        match_type = cache_result.get("match_type", "unknown")
+        match_info = cache_result.get("similarity", "")
+        resp_text = cache_result.get("response", "")
+        token_saved = len(resp_text) // 2 if resp_text else 0
+        log_info = f" sim={match_info}" if match_info else ""
+        log(f"🎯 缓存命中! ({match_type})" + log_info + f" saved=~{token_saved}tokens")
+        log_hit(match_type, user_query, match_info or None, token_saved)
         
-        if cache_result["hit"]:
-            match_type = cache_result.get("match_type", "unknown")
-            match_info = cache_result.get("similarity", "")
-            # Estimate tokens saved (~2x response length in chars)
-            resp_text = cache_result.get("response", "")
-            token_saved = len(resp_text) // 2 if resp_text else 0
-            log_info = f" sim={match_info}" if match_info else ""
-            log(f"🎯 缓存命中! ({match_type})" + log_info + f" saved=~{token_saved}tokens")
-            log_hit(match_type, user_query, match_info or None, token_saved)
+        if is_stream:
+            return build_streaming_from_cache(cache_result, body)
+        else:
             return build_response_from_cache(cache_result, body)
     
-    # Cache miss → forward to DeepSeek
-    log("🔍 缓存未命中 → 请求 DeepSeek API")
+    # Cache miss → forward to upstream
+    log("🔍 缓存未命中 → 请求" + (" (流式)" if is_stream else ""))
     log_hit("miss", user_query)
     return forward_to_deepseek(headers, body)
 
