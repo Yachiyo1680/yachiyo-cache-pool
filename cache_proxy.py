@@ -223,11 +223,48 @@ def forward_to_deepseek(headers: dict, body: dict) -> Response:
         )
         
         if body.get("stream", False):
-            # For streaming, return a streaming response
+            # For streaming: proxy chunks to client AND buffer for caching
+            collected_content = ""
+            
             def generate():
+                nonlocal collected_content
                 for chunk in resp.iter_content(chunk_size=None):
                     if chunk:
+                        chunk_str = chunk.decode("utf-8", errors="replace")
+                        # Extract content from SSE format
+                        for line in chunk_str.split("\n"):
+                            if line.startswith("data: ") and line != "data: [DONE]":
+                                try:
+                                    data = json.loads(line[6:])
+                                    choices = data.get("choices", [])
+                                    if choices:
+                                        delta = choices[0].get("delta", {})
+                                        content = delta.get("content", "")
+                                        if content:
+                                            collected_content += content
+                                except json.JSONDecodeError:
+                                    pass
                         yield chunk
+                
+                # After streaming completes, cache the full response
+                if collected_content:
+                    response_data = {
+                        "id": f"chatcmpl-{int(time.time())}",
+                        "object": "chat.completion",
+                        "created": int(time.time()),
+                        "model": body.get("model", ""),
+                        "choices": [{
+                            "index": 0,
+                            "message": {"role": "assistant", "content": collected_content},
+                            "finish_reason": "stop"
+                        }],
+                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                    }
+                    try:
+                        _try_cache_response(body, response_data)
+                        log(f"📥 流式缓存已保存 ({len(collected_content)} chars)")
+                    except Exception as e:
+                        log(f"⚠️ 流式缓存写入失败: {e}")
             
             return Response(
                 generate(),
