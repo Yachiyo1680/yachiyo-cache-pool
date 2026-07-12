@@ -29,6 +29,12 @@ import cache_pool as cp
 # Override embedding model from config
 cp.EMBED_MODEL = cp.CFG["embedding"].get("ollama_model", "embeddinggemma:300m-qat-q4_0")
 
+# === 工具缓存循环保护 ===
+# 记录最近的工具缓存命中时间戳，防止同一问题无限循环
+_tool_cache_loop_guard = {}  # key(query+model) -> [timestamps]
+TOOL_CACHE_MAX_LOOP = 3  # 同一查询连续命中最多允许多少次
+TOOL_CACHE_LOOP_WINDOW = 10  # 时间窗口（秒）
+
 # === Configuration (从 config.yaml 读取) ===
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEEPSEEK_BASE_URL = cp.CFG["upstream"]["base_url"]
@@ -456,18 +462,39 @@ def chat_completions():
     # === Step 1: Try Tool Cache first (精确匹配, 无 embedding) ===
     if user_query and is_cacheable_request(body):
         try:
+            # 循环保护：同一 query 短时间内连续命中多次 -> 放行到上游
+            global _tool_cache_loop_guard
+            loop_key = f"{body.get('model', '')}||{user_query}"
+            now_ts = time.time()
+            # 清理过期记录
+            _tool_cache_loop_guard = {
+                k: [t for t in v if now_ts - t < TOOL_CACHE_LOOP_WINDOW]
+                for k, v in _tool_cache_loop_guard.items()
+            }
+            
             tool_cache_result = cp.search_tool(user_query, model=body.get("model", ""))
             if tool_cache_result["hit"]:
-                tool_calls = tool_cache_result["tool_calls"]
-                tool_names = [tc["function"]["name"] for tc in tool_calls]
-                # 估算省掉的 token：整个请求体大小 / 2 chars-per-token
-                body_chars = len(json.dumps(body, ensure_ascii=False))
-                estimated_saved = max(body_chars // 2, 100)
-                log(f"🔧 工具缓存命中! 🐙 {tool_names} saved=~{estimated_saved}tokens")
-                log_hit("tool", user_query, token_saved=estimated_saved)
-                if is_stream:
-                    return build_tool_response_streaming(tool_cache_result, body)
-                return build_tool_response(tool_cache_result, body)
+                # 检查是否在循环
+                recent_hits = _tool_cache_loop_guard.get(loop_key, [])
+                if len(recent_hits) >= TOOL_CACHE_MAX_LOOP:
+                    log(f"⚠️ 检测到工具缓存循环 ({len(recent_hits)}x)，放行到语义缓存/上游")
+                    # 跳过工具缓存，走下面 Step 2
+                    pass
+                else:
+                    tool_calls = tool_cache_result["tool_calls"]
+                    tool_names = [tc["function"]["name"] for tc in tool_calls]
+                    # 记录本次命中
+                    recent_hits.append(now_ts)
+                    _tool_cache_loop_guard[loop_key] = recent_hits
+                    
+                    # 估算省掉的 token
+                    body_chars = len(json.dumps(body, ensure_ascii=False))
+                    estimated_saved = max(body_chars // 2, 100)
+                    log(f"🔧 工具缓存命中! 🐙 {tool_names} saved=~{estimated_saved}tokens")
+                    log_hit("tool", user_query, token_saved=estimated_saved)
+                    if is_stream:
+                        return build_tool_response_streaming(tool_cache_result, body)
+                    return build_tool_response(tool_cache_result, body)
         except Exception as e:
             log(f"⚠️ 工具缓存搜索出错: {e}")
     
