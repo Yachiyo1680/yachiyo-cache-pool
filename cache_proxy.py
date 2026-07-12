@@ -404,8 +404,11 @@ def chat_completions():
             if tool_cache_result["hit"]:
                 tool_calls = tool_cache_result["tool_calls"]
                 tool_names = [tc["function"]["name"] for tc in tool_calls]
-                log(f"🔧 工具缓存命中! 🐙 {tool_names}")
-                log_hit("tool", user_query)
+                # 估算省掉的 token：整个请求体大小 / 2 chars-per-token
+                body_chars = len(json.dumps(body, ensure_ascii=False))
+                estimated_saved = max(body_chars // 2, 100)
+                log(f"🔧 工具缓存命中! 🐙 {tool_names} saved=~{estimated_saved}tokens")
+                log_hit("tool", user_query, token_saved=estimated_saved)
                 return build_tool_response(tool_cache_result, body)
         except Exception as e:
             log(f"⚠️ 工具缓存搜索出错: {e}")
