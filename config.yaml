@@ -4,7 +4,7 @@
 # === Embedding 服务 ===
 embedding:
   # 后端: "llama-server" 或 "ollama"
-  backend: "ollama"
+  backend: "llama-server"
   # llama-server 地址（backend=llama-server 时生效）
   llama_url: "http://localhost:8080/v1/embeddings"
   # Ollama 地址（backend=ollama 时生效）

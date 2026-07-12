@@ -296,6 +296,10 @@ def search_tool(query: str, model: str = "") -> dict:
         ).fetchone()
         
         if row and not _is_expired(row):
+            loaded = json.loads(row["tool_calls"])
+            # 安全校验：空数组不返回
+            if not loaded or not isinstance(loaded, list):
+                return {"hit": False}
             db.execute(
                 "UPDATE tool_cache SET hit_count = hit_count + 1, last_hit_at = ? WHERE id = ?",
                 (now, row["id"])
@@ -303,7 +307,7 @@ def search_tool(query: str, model: str = "") -> dict:
             db.commit()
             return {
                 "hit": True,
-                "tool_calls": json.loads(row["tool_calls"]),
+                "tool_calls": loaded,
                 "model": row["model"],
                 "hit_count": row["hit_count"] + 1,
                 "entry_id": row["id"]
@@ -317,8 +321,10 @@ def store_tool(query: str, tool_calls: list, model: str = "",
                ttl: int = 3600) -> int:
     """
     Store query's tool_calls response in tool cache.
-    Returns the entry ID.
+    Returns the entry ID. 拒绝空数组或无效数据。
     """
+    if not tool_calls or not isinstance(tool_calls, list):
+        raise ValueError("tool_calls 不能为空")
     db = get_db()
     try:
         h = exact_hash(query, model)

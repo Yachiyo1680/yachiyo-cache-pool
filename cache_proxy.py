@@ -482,19 +482,24 @@ def chat_completions():
                     pass
                 else:
                     tool_calls = tool_cache_result["tool_calls"]
-                    tool_names = [tc["function"]["name"] for tc in tool_calls]
-                    # 记录本次命中
-                    recent_hits.append(now_ts)
-                    _tool_cache_loop_guard[loop_key] = recent_hits
-                    
-                    # 估算省掉的 token
-                    body_chars = len(json.dumps(body, ensure_ascii=False))
-                    estimated_saved = max(body_chars // 2, 100)
-                    log(f"🔧 工具缓存命中! 🐙 {tool_names} saved=~{estimated_saved}tokens")
-                    log_hit("tool", user_query, token_saved=estimated_saved)
-                    if is_stream:
-                        return build_tool_response_streaming(tool_cache_result, body)
-                    return build_tool_response(tool_cache_result, body)
+                    # 安全校验：缓存里的 tool_calls 不能是空数组
+                    if not tool_calls or not isinstance(tool_calls, list):
+                        log(f"⚠️ 工具缓存数据异常 (tool_calls 为空)，跳过缓存")
+                        pass
+                    else:
+                        tool_names = [tc["function"]["name"] for tc in tool_calls]
+                        # 记录本次命中
+                        recent_hits.append(now_ts)
+                        _tool_cache_loop_guard[loop_key] = recent_hits
+                        
+                        # 估算省掉的 token
+                        body_chars = len(json.dumps(body, ensure_ascii=False))
+                        estimated_saved = max(body_chars // 2, 100)
+                        log(f"🔧 工具缓存命中! 🐙 {tool_names} saved=~{estimated_saved}tokens")
+                        log_hit("tool", user_query, token_saved=estimated_saved)
+                        if is_stream:
+                            return build_tool_response_streaming(tool_cache_result, body)
+                        return build_tool_response(tool_cache_result, body)
         except Exception as e:
             log(f"⚠️ 工具缓存搜索出错: {e}")
     
