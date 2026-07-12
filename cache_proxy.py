@@ -465,6 +465,8 @@ def chat_completions():
                 estimated_saved = max(body_chars // 2, 100)
                 log(f"🔧 工具缓存命中! 🐙 {tool_names} saved=~{estimated_saved}tokens")
                 log_hit("tool", user_query, token_saved=estimated_saved)
+                if is_stream:
+                    return build_tool_response_streaming(tool_cache_result, body)
                 return build_tool_response(tool_cache_result, body)
         except Exception as e:
             log(f"⚠️ 工具缓存搜索出错: {e}")
@@ -527,6 +529,87 @@ def build_tool_response(cached: dict, original_body: dict) -> tuple:
         "X-Cache": "tool",
         "X-Cache-Hits": str(cached.get("hit_count", 1))
     }
+
+def build_tool_response_streaming(cached: dict, original_body: dict) -> Response:
+    """Build a streaming SSE response from cached tool_calls."""
+    now = int(time.time())
+    model = original_body.get("model", "cached-model")
+    tool_calls = cached["tool_calls"]
+    
+    def generate():
+        # First chunk: tool_calls metadata (id, type, function name)
+        first_chunk = {
+            "id": f"chatcmpl-tool-{now}",
+            "object": "chat.completion.chunk",
+            "created": now,
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "index": i,
+                        "id": tc.get("id", f"call_{i}"),
+                        "type": tc.get("type", "function"),
+                        "function": {
+                            "name": tc["function"]["name"],
+                            "arguments": ""
+                        }
+                    } for i, tc in enumerate(tool_calls)]
+                },
+                "finish_reason": None
+            }]
+        }
+        yield f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n"
+        
+        # Subsequent chunks: function arguments (one per tool)
+        for i, tc in enumerate(tool_calls):
+            args = tc["function"].get("arguments", "")
+            if args:
+                arg_chunk = {
+                    "id": f"chatcmpl-tool-{now}",
+                    "object": "chat.completion.chunk",
+                    "created": now,
+                    "model": model,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [{
+                                "index": i,
+                                "function": {"arguments": args}
+                            }]
+                        },
+                        "finish_reason": None
+                    }]
+                }
+                yield f"data: {json.dumps(arg_chunk, ensure_ascii=False)}\n\n"
+        
+        # Final chunk: finish_reason
+        final_chunk = {
+            "id": f"chatcmpl-tool-{now}",
+            "object": "chat.completion.chunk",
+            "created": now,
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "tool_calls"
+            }]
+        }
+        yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+    
+    return Response(
+        generate(),
+        status=200,
+        headers={
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Cache": "tool"
+        }
+    )
 
 @app.route("/v1/chat/completions", methods=["POST"])
 def v1_chat_completions():
