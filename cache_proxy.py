@@ -321,6 +321,15 @@ def forward_to_deepseek(headers: dict, body: dict) -> Response:
                         log(f"\U0001f4e5 流式缓存已保存 ({len(collected_content)} chars)")
                     except Exception as e:
                         log(f"\u26a0\ufe0f 流式缓存写入失败: {e}")
+            
+            return Response(
+                generate(),
+                status=resp.status_code,
+                headers={
+                    "Content-Type": resp.headers.get("Content-Type", "text/event-stream"),
+                    "X-Cache": "miss-stream"
+                }
+            )
         else:
             # Non-streaming: parse, cache, return
             response_data = resp.json()
