@@ -34,7 +34,22 @@ if $MISSING_DEPS; then
 fi
 echo "   ✅ Python 依赖已就绪"
 
-# === 2. 检查/下载 llama-server ===
+# === 检测后端配置 ===
+BACKEND=$(grep -oP 'backend:\s*"?\K[^"\s]+' "$SCRIPT_DIR/config.yaml" 2>/dev/null || echo "")
+if [ -z "$BACKEND" ]; then BACKEND="llama-server"; fi
+
+if [ "$BACKEND" = "ollama" ]; then
+    echo "🔧 后端: Ollama (跳过 llama-server 和模型下载)"
+    echo "   → 确保 Ollama 正在运行: curl http://localhost:11434"
+    echo "   → 确保 embedding 模型存在:"
+    echo "     ollama pull embeddinggemma:300m-qat-q4_0"
+    echo ""
+else
+    echo "🔧 后端: llama-server"
+fi
+
+# === 2. 检查/下载 llama-server（仅非 ollama 模式）===
+if [ "$BACKEND" != "ollama" ]; then
 echo "🔧 检查 llama-server..."
 if [ ! -f "$LLAMA_SERVER_BIN" ]; then
     echo "   → 未找到本地 llama-server，尝试自动下载..."
@@ -151,8 +166,10 @@ if [ ! -f "$LLAMA_SERVER_BIN" ]; then
 else
     echo "   ✅ 本地 llama-server 已就绪"
 fi
+fi
 
 # === 3. 检查/下载 GGUF 模型 ===
+if [ "$BACKEND" != "ollama" ]; then
 echo "🧠 检查 embedding 模型..."
 if [ ! -f "$GGUF" ]; then
     echo "   → 未找到本地模型，自动下载 (~314MB)..."
@@ -183,8 +200,10 @@ if [ ! -f "$GGUF" ]; then
 else
     echo "   ✅ 模型已就绪 ($(du -h "$GGUF" | cut -f1))"
 fi
+fi
 
-# === 4. 启动 llama-server ===
+# === 4. 启动 llama-server（仅非 ollama 模式）===
+if [ "$BACKEND" != "ollama" ]; then
 if curl -s http://localhost:8080/health > /dev/null 2>&1; then
     echo "✅ llama.cpp server (端口 8080) 已在运行中"
 else
@@ -210,6 +229,7 @@ else
             exit 1
         fi
     fi
+fi
 fi
 
 # === 5. 启动缓存代理 ===
