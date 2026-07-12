@@ -225,9 +225,11 @@ def forward_to_deepseek(headers: dict, body: dict) -> Response:
         if body.get("stream", False):
             # For streaming: proxy chunks to client AND buffer for caching
             collected_content = ""
+            collected_tool_calls = {}  # index -> {id, type, function: {name, arguments}}
+            finish_reason = None
             
             def generate():
-                nonlocal collected_content
+                nonlocal collected_content, collected_tool_calls, finish_reason
                 for chunk in resp.iter_content(chunk_size=None):
                     if chunk:
                         chunk_str = chunk.decode("utf-8", errors="replace")
@@ -242,12 +244,66 @@ def forward_to_deepseek(headers: dict, body: dict) -> Response:
                                         content = delta.get("content", "")
                                         if content:
                                             collected_content += content
+                                        
+                                        # Collect tool_calls from streaming deltas
+                                        tc_list = delta.get("tool_calls")
+                                        if tc_list:
+                                            for tc_chunk in tc_list:
+                                                tc_idx = tc_chunk.get("index", 0)
+                                                if tc_idx not in collected_tool_calls:
+                                                    collected_tool_calls[tc_idx] = {
+                                                        "id": tc_chunk.get("id", ""),
+                                                        "type": tc_chunk.get("type", "function"),
+                                                        "function": {"name": "", "arguments": ""}
+                                                    }
+                                                tc_entry = collected_tool_calls[tc_idx]
+                                                # Update id/type if present
+                                                if tc_chunk.get("id"):
+                                                    tc_entry["id"] = tc_chunk["id"]
+                                                if tc_chunk.get("type"):
+                                                    tc_entry["type"] = tc_chunk["type"]
+                                                # Merge function info
+                                                fn = tc_chunk.get("function", {})
+                                                if fn.get("name"):
+                                                    tc_entry["function"]["name"] = fn["name"]
+                                                if fn.get("arguments"):
+                                                    tc_entry["function"]["arguments"] += fn["arguments"]
+                                        
+                                        # Track finish_reason
+                                        fr = choices[0].get("finish_reason")
+                                        if fr:
+                                            finish_reason = fr
                                 except json.JSONDecodeError:
                                     pass
                         yield chunk
                 
                 # After streaming completes, cache the full response
-                if collected_content:
+                if collected_tool_calls:
+                    # Streamed response contains tool_calls
+                    tool_calls_list = [collected_tool_calls[i] for i in sorted(collected_tool_calls.keys())]
+                    response_data = {
+                        "id": f"chatcmpl-{int(time.time())}",
+                        "object": "chat.completion",
+                        "created": int(time.time()),
+                        "model": body.get("model", ""),
+                        "choices": [{
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": collected_content or None,
+                                "tool_calls": tool_calls_list
+                            },
+                            "finish_reason": finish_reason or "tool_calls"
+                        }],
+                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                    }
+                    try:
+                        _try_cache_response(body, response_data)
+                        names = [tc["function"]["name"] for tc in tool_calls_list]
+                        log(f"\U0001f4e5 流式 tool_call 缓存已保存 ({names})")
+                    except Exception as e:
+                        log(f"\u26a0\ufe0f 流式 tool_call 缓存写入失败: {e}")
+                elif collected_content:
                     response_data = {
                         "id": f"chatcmpl-{int(time.time())}",
                         "object": "chat.completion",
@@ -256,24 +312,15 @@ def forward_to_deepseek(headers: dict, body: dict) -> Response:
                         "choices": [{
                             "index": 0,
                             "message": {"role": "assistant", "content": collected_content},
-                            "finish_reason": "stop"
+                            "finish_reason": finish_reason or "stop"
                         }],
                         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
                     }
                     try:
                         _try_cache_response(body, response_data)
-                        log(f"📥 流式缓存已保存 ({len(collected_content)} chars)")
+                        log(f"\U0001f4e5 流式缓存已保存 ({len(collected_content)} chars)")
                     except Exception as e:
-                        log(f"⚠️ 流式缓存写入失败: {e}")
-            
-            return Response(
-                generate(),
-                status=resp.status_code,
-                headers={
-                    "Content-Type": resp.headers.get("Content-Type", "text/event-stream"),
-                    "X-Cache": "miss-stream"
-                }
-            )
+                        log(f"\u26a0\ufe0f 流式缓存写入失败: {e}")
         else:
             # Non-streaming: parse, cache, return
             response_data = resp.json()
