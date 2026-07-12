@@ -112,6 +112,19 @@ def _init_schema(conn):
         );
         CREATE INDEX IF NOT EXISTS idx_exact_hash ON cache_entries(exact_hash);
         CREATE INDEX IF NOT EXISTS idx_created ON cache_entries(created_at);
+
+        CREATE TABLE IF NOT EXISTS tool_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            exact_hash TEXT NOT NULL,
+            model TEXT NOT NULL DEFAULT '',
+            query TEXT NOT NULL,
+            tool_calls TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            last_hit_at REAL,
+            hit_count INTEGER DEFAULT 0,
+            ttl_seconds INTEGER DEFAULT 3600
+        );
+        CREATE INDEX IF NOT EXISTS idx_tool_exact_hash ON tool_cache(exact_hash);
     """)
 
 # === Embedding ===
@@ -264,6 +277,83 @@ def search(query: str, model: str = "", threshold: float = SIMILARITY_THRESHOLD)
     finally:
         db.close()
 
+# === Tool Cache Operations ===
+
+def search_tool(query: str, model: str = "") -> dict:
+    """
+    Search tool cache for exact match.
+    Uses exact hash only (no embedding/ semantic).
+    Returns cached tool_calls dict or {"hit": False}.
+    """
+    db = get_db()
+    try:
+        h = exact_hash(query, model)
+        now = time.time()
+        
+        row = db.execute(
+            "SELECT * FROM tool_cache WHERE exact_hash = ?",
+            (h,)
+        ).fetchone()
+        
+        if row and not _is_expired(row):
+            db.execute(
+                "UPDATE tool_cache SET hit_count = hit_count + 1, last_hit_at = ? WHERE id = ?",
+                (now, row["id"])
+            )
+            db.commit()
+            return {
+                "hit": True,
+                "tool_calls": json.loads(row["tool_calls"]),
+                "model": row["model"],
+                "hit_count": row["hit_count"] + 1,
+                "entry_id": row["id"]
+            }
+        
+        return {"hit": False}
+    finally:
+        db.close()
+
+def store_tool(query: str, tool_calls: list, model: str = "",
+               ttl: int = 3600) -> int:
+    """
+    Store query's tool_calls response in tool cache.
+    Returns the entry ID.
+    """
+    db = get_db()
+    try:
+        h = exact_hash(query, model)
+        now = time.time()
+        
+        existing = db.execute(
+            "SELECT id FROM tool_cache WHERE exact_hash = ?",
+            (h,)
+        ).fetchone()
+        
+        if existing:
+            db.execute(
+                """UPDATE tool_cache SET
+                    tool_calls = ?, created_at = ?, last_hit_at = ?,
+                    ttl_seconds = ?
+                WHERE id = ?""",
+                (json.dumps(tool_calls, ensure_ascii=False), now, now, ttl, existing["id"])
+            )
+            entry_id = existing["id"]
+        else:
+            cursor = db.execute(
+                """INSERT INTO tool_cache
+                    (exact_hash, model, query, tool_calls, created_at, last_hit_at, ttl_seconds)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (h, model, query, json.dumps(tool_calls, ensure_ascii=False),
+                 now, now, ttl)
+            )
+            entry_id = cursor.lastrowid
+        
+        db.commit()
+        return entry_id
+    finally:
+        db.close()
+
+# === Existing store function kept below ===
 def store(query: str, response: str, model: str = "",
           embedding: list = None, metadata: dict = None,
           ttl: int = DEFAULT_TTL) -> int:
@@ -335,6 +425,16 @@ def stats() -> dict:
             "SELECT MAX(created_at) as c FROM cache_entries"
         ).fetchone()["c"]
         
+        # Tool cache stats
+        tool_total = db.execute("SELECT COUNT(*) as c FROM tool_cache").fetchone()["c"]
+        tool_expired = db.execute(
+            "SELECT COUNT(*) as c FROM tool_cache WHERE created_at + ttl_seconds < ?",
+            (time.time(),)
+        ).fetchone()["c"]
+        tool_hits = db.execute(
+            "SELECT COALESCE(SUM(hit_count), 0) as c FROM tool_cache"
+        ).fetchone()["c"]
+        
         return {
             "total_entries": total,
             "expired_entries": expired,
@@ -345,7 +445,10 @@ def stats() -> dict:
             "newest_entry": newest,
             "db_path": DB_PATH,
             "embed_model": "llama.cpp Q8_0" if USE_LLAMA_SERVER_DIRECT else EMBED_MODEL,
-            "similarity_threshold": SIMILARITY_THRESHOLD
+            "similarity_threshold": SIMILARITY_THRESHOLD,
+            "tool_cache_entries": tool_total,
+            "tool_cache_active": tool_total - tool_expired,
+            "tool_cache_hits": tool_hits
         }
     finally:
         db.close()
@@ -360,9 +463,16 @@ def vacuum():
             (now,)
         )
         deleted = cursor.rowcount
+        
+        cursor2 = db.execute(
+            "DELETE FROM tool_cache WHERE created_at + ttl_seconds < ?",
+            (now,)
+        )
+        tool_deleted = cursor2.rowcount
+        
         db.commit()
         db.execute("VACUUM")
-        return {"deleted": deleted}
+        return {"deleted": deleted, "tool_deleted": tool_deleted}
     finally:
         db.close()
 
@@ -401,6 +511,23 @@ def cli():
         entry_id = store(query, resp, embedding=emb)
         print(f"✅ 已缓存 (ID: {entry_id})")
     
+    elif cmd == "tool-search":
+        query = sys.argv[2] if len(sys.argv) > 2 else input("Query: ")
+        result = search_tool(query)
+        if result["hit"]:
+            print(f"✅ 工具缓存 HIT")
+            print(f"   命中次数: {result['hit_count']}")
+            print(f"   工具调用: {json.dumps(result['tool_calls'], ensure_ascii=False, indent=2)[:500]}")
+        else:
+            print("❌ MISS")
+    
+    elif cmd == "tool-store":
+        query = sys.argv[2] if len(sys.argv) > 2 else input("Query: ")
+        tools_json = sys.argv[3] if len(sys.argv) > 3 else input("Tool calls JSON: ")
+        tool_calls = json.loads(tools_json)
+        entry_id = store_tool(query, tool_calls)
+        print(f"✅ 工具缓存已存入 (ID: {entry_id})")
+    
     elif cmd == "stats":
         s = stats()
         print(f"📊 缓存统计")
@@ -412,6 +539,9 @@ def cli():
         print(f"   数据库: {s['db_path']}")
         print(f"   模型: {s['embed_model']}")
         print(f"   阈值: {s['similarity_threshold']}")
+        print(f"   工具缓存条目: {s['tool_cache_entries']}")
+        print(f"   工具缓存有效: {s['tool_cache_active']}")
+        print(f"   工具缓存命中: {s['tool_cache_hits']}")
     
     elif cmd == "vacuum":
         result = vacuum()

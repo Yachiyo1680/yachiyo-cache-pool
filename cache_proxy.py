@@ -313,41 +313,45 @@ def _try_cache_response(body: dict, response_data: dict):
         if not is_cacheable_request(body):
             return
         
-        # Extract the assistant's response text for caching
         choices = response_data.get("choices", [])
         if not choices:
             return
         
-        assistant_content = choices[0].get("message", {}).get("content", "")
+        message = choices[0].get("message", {})
+        model = body.get("model", "")
+        messages = body.get("messages", [])
+        user_query = extract_last_user_message(messages)
+        if not user_query.strip():
+            return
+        
+        # === Case 1: Response contains tool_calls -> 存入工具缓存 ===
+        tool_calls = message.get("tool_calls")
+        if tool_calls:
+            tool_names = [tc["function"]["name"] for tc in tool_calls]
+            log(f"🔧 缓存 tool_call: {len(tool_calls)} 个工具 ({tool_names})")
+            cp.store_tool(
+                query=user_query,
+                tool_calls=tool_calls,
+                model=model,
+                ttl=3600
+            )
+            return
+        
+        # === Case 2: Normal content response -> 存入语义缓存 ===
+        assistant_content = message.get("content", "")
         if not assistant_content:
             return
         
-        # The "query" for cache = the user's last message in plain text
-        messages = body.get("messages", [])
-        user_messages = [m for m in messages if m.get("role") == "user"]
-        if not user_messages:
-            return
-        
-        last_user_msg = user_messages[-1]
-        query_text = last_user_msg.get("content", "")
-        if isinstance(query_text, list):
-            text_parts = [p.get("text", "") for p in query_text if p.get("type") == "text"]
-            query_text = " ".join(text_parts)
-        
-        if not query_text.strip():
-            return
-        
-        # Compute embedding and store using plain user text as query
         log(f"📥 缓存新回应 ({len(assistant_content)} chars)")
-        emb = cp.get_embedding(query_text)
+        emb = cp.get_embedding(user_query)
         cp.store(
-            query=query_text,
+            query=user_query,
             response=json.dumps(response_data, ensure_ascii=False),
-            model=body.get("model", ""),
+            model=model,
             embedding=emb,
             metadata={
                 "system_context": include_system_context(messages)[:200],
-                "model": body.get("model", ""),
+                "model": model,
                 "cached_at": time.time()
             }
         )
@@ -393,7 +397,20 @@ def chat_completions():
     messages = body.get("messages", [])
     user_query = extract_last_user_message(messages)
     
-    # Try cache lookup for ALL requests (streaming or not)
+    # === Step 1: Try Tool Cache first (精确匹配, 无 embedding) ===
+    if user_query and is_cacheable_request(body):
+        try:
+            tool_cache_result = cp.search_tool(user_query, model=body.get("model", ""))
+            if tool_cache_result["hit"]:
+                tool_calls = tool_cache_result["tool_calls"]
+                tool_names = [tc["function"]["name"] for tc in tool_calls]
+                log(f"🔧 工具缓存命中! 🐙 {tool_names}")
+                log_hit("tool", user_query)
+                return build_tool_response(tool_cache_result, body)
+        except Exception as e:
+            log(f"⚠️ 工具缓存搜索出错: {e}")
+    
+    # === Step 2: Try Semantic Cache next ===
     cache_hit = False
     cache_result = None
     
@@ -402,7 +419,7 @@ def chat_completions():
             cache_result = cp.search(user_query, model=body.get("model", ""))
             cache_hit = cache_result["hit"]
         except Exception as e:
-            log(f"⚠️ 缓存搜索出错: {e}")
+            log(f"⚠️ 语义缓存搜索出错: {e}")
     
     if cache_hit:
         match_type = cache_result.get("match_type", "unknown")
@@ -410,7 +427,7 @@ def chat_completions():
         resp_text = cache_result.get("response", "")
         token_saved = len(resp_text) // 2 if resp_text else 0
         log_info = f" sim={match_info}" if match_info else ""
-        log(f"🎯 缓存命中! ({match_type})" + log_info + f" saved=~{token_saved}tokens")
+        log(f"🎯 语义缓存命中! ({match_type})" + log_info + f" saved=~{token_saved}tokens")
         log_hit(match_type, user_query, match_info or None, token_saved)
         
         if is_stream:
@@ -418,10 +435,39 @@ def chat_completions():
         else:
             return build_response_from_cache(cache_result, body)
     
-    # Cache miss → forward to upstream
+    # === Step 3: Cache miss -> forward to upstream ===
     log("🔍 缓存未命中 → 请求" + (" (流式)" if is_stream else ""))
     log_hit("miss", user_query)
     return forward_to_deepseek(headers, body)
+
+def build_tool_response(cached: dict, original_body: dict) -> tuple:
+    """Build a proper HTTP response from cached tool_calls."""
+    now = int(time.time())
+    response = {
+        "id": f"chatcmpl-tool-{now}",
+        "object": "chat.completion",
+        "created": now,
+        "model": original_body.get("model", "cached-model"),
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": cached["tool_calls"]
+            },
+            "finish_reason": "tool_calls"
+        }],
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+        }
+    }
+    
+    return jsonify(response), 200, {
+        "X-Cache": "tool",
+        "X-Cache-Hits": str(cached.get("hit_count", 1))
+    }
 
 @app.route("/v1/chat/completions", methods=["POST"])
 def v1_chat_completions():
